@@ -1,0 +1,8 @@
+# The API bridge reads all tracker telemetry and sends commands.
+user selfx-api
+topic read selfx/+/telemetry
+topic write selfx/+/cmd
+
+# Every tracker logs in with its own device ID as username and may only use its own topics.
+pattern write selfx/%u/telemetry
+pattern read selfx/%u/cmd

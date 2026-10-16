@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: selfx
+      POSTGRES_PASSWORD: selfx
+      POSTGRES_DB: selfx
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5432:5432"]   # dev only: not reachable from the network
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    volumes: ["./deploy/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
+    ports: ["127.0.0.1:1883:1883"]   # dev only: reachable from this computer, not the network
+
+  api:
+    build: ./backend
+    environment:
+      SELFX_DATABASE_URL: postgresql+psycopg://selfx:selfx@db:5432/selfx
+      SELFX_JWT_SECRET: change-me-long-random-string
+      SELFX_ADMIN_KEY: change-me-admin-key
+      SELFX_MQTT_ENABLED: "true"
+      SELFX_MQTT_HOST: mqtt
+    depends_on: [db, mqtt]
+    ports: ["127.0.0.1:8000:8000"]   # dev only; use "8000:8000" while testing with a real phone on Wi-Fi
+
+volumes:
+  pgdata:

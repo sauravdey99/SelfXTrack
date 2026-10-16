@@ -1,0 +1,6 @@
+# Copy to firebase.properties (same folder) and fill from Firebase console:
+# Project settings -> General -> Your apps -> Android app (package com.selfxtrack.app)
+apiKey=AIza...
+appId=1:1234567890:android:abcdef
+projectId=selfxtrack
+senderId=1234567890

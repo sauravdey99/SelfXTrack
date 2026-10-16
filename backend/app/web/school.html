@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SelfXTrack – School dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --blue:#1F4E79; --red:#C62828; --green:#2E7D32; --grey:#666; --bg:#f4f6f9; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:#222; }
+  header { background:var(--blue); color:#fff; padding:12px 20px; display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:20px; margin:0; flex:1; }
+  header button { background:transparent; color:#fff; border:1px solid #fff8; border-radius:6px; padding:6px 12px; cursor:pointer; }
+  main { padding:20px; display:grid; grid-template-columns: minmax(320px, 1fr) 1.3fr; gap:20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background:#fff; border-radius:10px; box-shadow:0 1px 3px #0002; padding:16px; margin-bottom:16px; }
+  .sos { border-left:6px solid var(--red); background:#fff5f5; }
+  .muted { color:var(--grey); font-size:13px; }
+  .btn { border:0; border-radius:8px; padding:8px 12px; cursor:pointer; font-size:14px; margin:4px 4px 0 0; }
+  .btn.red { background:var(--red); color:#fff; } .btn.blue { background:var(--blue); color:#fff; }
+  .btn.green { background:var(--green); color:#fff; } .btn.line { background:#fff; border:1px solid #999; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid #eee; }
+  th { background:#eef3f8; }
+  #map { height:420px; border-radius:10px; }
+  .banner { padding:10px 14px; border-radius:8px; font-weight:600; margin-bottom:12px; }
+  .banner.red { background:var(--red); color:#fff; animation: blink 1s infinite; }
+  .banner.ok { background:#e8f5e9; color:var(--green); }
+  @keyframes blink { 50% { opacity:.6; } }
+  #login { max-width:380px; margin:80px auto; }
+  input { width:100%; padding:10px; margin:6px 0 12px; border:1px solid #bbb; border-radius:6px; font-size:15px; }
+  .tabs button { background:none; border:0; padding:8px 14px; font-size:15px; cursor:pointer; border-bottom:3px solid transparent; }
+  .tabs button.on { border-color:var(--blue); font-weight:700; }
+</style></head>
+<body>
+<div id="login" class="card" style="display:none">
+  <h2>🏫 SelfXTrack – School</h2>
+  <p class="muted">Log in with the same account you use in the SelfXTrack app (teacher / staff). Your mobile number must be verified in the app.</p>
+  <label>Email</label><input id="email" type="email" autocomplete="username">
+  <label>Password</label><input id="password" type="password" autocomplete="current-password">
+  <button class="btn blue" onclick="login()">Log in</button>
+  <p id="loginErr" style="color:var(--red)"></p>
+</div>
+
+<div id="app" style="display:none">
+  <header><h1>🏫 School safety dashboard</h1><span id="who"></span>
+    <button onclick="toggleSound()" id="soundBtn">🔔 Sound on</button><button onclick="logout()">Log out</button></header>
+  <main>
+    <section>
+      <div id="banner"></div>
+      <div class="tabs"><button id="t1" class="on" onclick="tab(1)">Students</button><button id="t2" onclick="tab(2)">SOS history (30 days)</button></div>
+      <div id="list"></div>
+      <div id="history" style="display:none"></div>
+    </section>
+    <section>
+      <div class="card"><div id="mapTitle"><b>Live map</b> <span class="muted">– location is shown only while a student's SOS is active</span></div>
+        <div id="map" style="margin-top:8px"></div><div id="trackInfo" class="muted" style="margin-top:8px"></div></div>
+      <div class="card muted">Do not confront anyone. Observe, inform the family and call 112 if there is danger.
+        Every location view is logged for the family.</div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = location.origin;
+let token = localStorage.getItem("sx_school_token"), sound = true, known = new Set(), tracking = null, map, marker, line;
+const $ = id => document.getElementById(id);
+const ago = iso => { if (!iso) return "–"; const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago"; };
+const hm = iso => new Date(iso).toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata"});
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, {...opts, headers: {"Content-Type": "application/json", Authorization: "Bearer " + token}});
+  if (r.status === 401) { logout(); throw new Error("Session expired"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+async function login() {
+  $("loginErr").textContent = "";
+  try {
+    const r = await fetch(API + "/api/auth/login", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email: $("email").value, password: $("password").value})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || "Login failed");
+    token = j.access_token; localStorage.setItem("sx_school_token", token); start();
+  } catch (e) { $("loginErr").textContent = e.message; }
+}
+function logout() { localStorage.removeItem("sx_school_token"); token = null; $("app").style.display = "none"; $("login").style.display = "block"; }
+function toggleSound() { sound = !sound; $("soundBtn").textContent = sound ? "🔔 Sound on" : "🔕 Sound off"; }
+function beep() {
+  if (!sound) return;
+  try { const a = new AudioContext(); [0, .4, .8].forEach(t => { const o = a.createOscillator(); o.frequency.value = 880;
+    o.connect(a.destination); o.start(a.currentTime + t); o.stop(a.currentTime + t + .25); }); } catch (e) {}
+}
+function tab(n) { $("t1").classList.toggle("on", n === 1); $("t2").classList.toggle("on", n === 2);
+  $("list").style.display = n === 1 ? "" : "none"; $("history").style.display = n === 2 ? "" : "none"; if (n === 2) loadHistory(); }
+
+async function load() {
+  let b;
+  try { b = await api("/api/staff/board"); } catch (e) { $("list").innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+  if (!b.verified) { $("list").innerHTML = `<div class="card">Verify your mobile number in the SelfXTrack app first. Children appear here when parents add that number.</div>`; return; }
+  const kids = b.children, sos = kids.filter(k => k.sos);
+  const fresh = sos.filter(k => !known.has(k.sos.sos_id));
+  if (fresh.length && known.size + fresh.length > 0 && load.started) beep();
+  sos.forEach(k => known.add(k.sos.sos_id)); load.started = true;
+  $("banner").innerHTML = sos.length ? `<div class="banner red">🚨 ${sos.length} student(s) in SOS</div>`
+                                     : `<div class="banner ok">✅ No active SOS · ${kids.length} student(s)</div>`;
+  $("list").innerHTML = kids.length ? kids.map(card).join("") :
+    `<div class="card muted">No students yet. When a parent adds your mobile number in the app (Child setup → School), the child appears here.</div>`;
+  if (tracking && !sos.find(k => k.sos.sos_id === tracking)) { tracking = null; $("trackInfo").textContent = "SOS ended – tracking stopped."; }
+}
+function card(k) {
+  const s = k.sos, cls = [k.class_name && "Class " + esc(k.class_name), esc(k.school)].filter(Boolean).join(" · ");
+  if (!s) return `<div class="card"><b>${esc(k.name)}</b> <span class="muted">${cls} · you: ${esc(k.my_role)}</span>
+     <div class="muted">No active alert – parent contacts and location are shown only during an SOS.</div></div>`;
+  const parents = (k.parents || []).filter(p => p.phone).map(p =>
+    `<a class="btn ${p.raised ? "green" : "line"}" href="tel:${esc(p.phone)}">📞 ${esc(p.name)} ${p.raised ? "– raised this alert" : "(" + (p.role === "owner" ? "parent" : esc(p.role)) + ")"} ${esc(p.phone)}</a>`).join("");
+  return `<div class="card sos"><b style="color:var(--red)">🚨 ${esc(k.name)}</b> <span class="muted">${cls}</span>
+    <div>SOS ${ago(s.started_at)} · ${s.status === "active" ? "<b>waiting for response</b>" : "someone is responding"}</div>
+    <div class="muted">Last update ${ago(s.last_seen)} · battery ${s.battery ?? "–"}%${s.speed_kmh ? " · " + Math.round(s.speed_kmh) + " km/h" : ""}</div>
+    <div><button class="btn blue" onclick="track(${s.sos_id})">📍 Track live</button>
+    <a class="btn line" target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}">Navigate</a>
+    ${s.status === "active" ? `<button class="btn line" onclick="ack(${s.sos_id}, '${esc(k.name)}')">I'm on it</button>` : ""}
+    <a class="btn red" href="tel:112">Call 112</a></div><div>${parents}</div></div>`;
+}
+async function ack(id, name) {
+  if (!confirm(`I'm on it?\n\nThe family will see that you (school) are handling ${name}'s SOS. Only confirm if you are going to help now.`)) return;
+  try { await api(`/api/staff/sos/${id}/acknowledge`, {method: "POST"}); load(); } catch (e) { alert(e.message); }
+}
+async function track(id) { tracking = id; await refreshTrack(); }
+async function refreshTrack() {
+  if (!tracking) return;
+  try {
+    const t = await api(`/api/staff/sos/${tracking}/track`);
+    if (!map) { map = L.map("map").setView([t.lat || 20.6, t.lon || 78.9], 15);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {attribution: "© OpenStreetMap"}).addTo(map); }
+    const pts = t.trail.map(p => [p.lat, p.lon]);
+    if (line) line.remove(); line = L.polyline(pts, {color: "#C62828"}).addTo(map);
+    if (t.lat != null) { if (marker) marker.remove(); marker = L.marker([t.lat, t.lon]).addTo(map).bindPopup(esc(t.name)); map.setView([t.lat, t.lon]); }
+    $("mapTitle").innerHTML = `<b>🚨 ${esc(t.name)} – live</b> <span class="muted">updates every 10 s</span>`;
+    $("trackInfo").textContent = `Updated ${ago(t.last_seen)} · ±${Math.round(t.accuracy_m || 0)} m · battery ${t.battery ?? "–"}%`;
+  } catch (e) { $("trackInfo").textContent = e.message + " (tracking stops when the SOS ends)"; tracking = null; }
+}
+async function loadHistory() {
+  try {
+    const h = await api("/api/staff/history");
+    $("history").innerHTML = `<div class="card">${h.length ? `<table><tr><th>When</th><th>Student</th><th>Status</th><th>Handled by</th></tr>` +
+      h.map(x => `<tr><td>${new Date(x.started_at).toLocaleString("en-IN", {timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"})}</td>
+      <td>${esc(x.name)}${x.class_name ? " · " + esc(x.class_name) : ""}</td>
+      <td>${x.status === "resolved" ? "✅ safe" + (x.resolved_at ? " " + hm(x.resolved_at) : "") : esc(x.status)}${x.school_alerted ? " · school alerted" : ""}</td>
+      <td>${esc(x.responder || "–")}</td></tr>`).join("") + "</table>" : "<span class='muted'>No SOS in the last 30 days ✅</span>"}</div>`;
+  } catch (e) { $("history").innerHTML = `<div class="card">${esc(e.message)}</div>`; }
+}
+async function start() {
+  $("login").style.display = "none"; $("app").style.display = "block";
+  try { const me = await api("/api/auth/me"); $("who").textContent = me.name; } catch (e) { return; }
+  load(); setInterval(load, 10000); setInterval(refreshTrack, 10000);
+}
+token ? start() : logout();
+</script>
+</body></html>

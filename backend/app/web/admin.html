@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SelfXTrack – Admin</title>
+<style>
+  :root { --blue:#1F4E79; --red:#C62828; --green:#2E7D32; --bg:#f4f6f9; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:#222; }
+  header { background:var(--blue); color:#fff; padding:12px 20px; display:flex; gap:16px; align-items:center; }
+  header h1 { font-size:19px; margin:0; flex:1; }
+  nav button { background:none; color:#fff; border:0; padding:8px 12px; cursor:pointer; font-size:15px; border-bottom:3px solid transparent; }
+  nav button.on { border-color:#fff; font-weight:700; }
+  main { padding:20px; max-width:1200px; margin:auto; }
+  .card { background:#fff; border-radius:10px; box-shadow:0 1px 3px #0002; padding:16px; margin-bottom:16px; overflow-x:auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .num { font-size:28px; font-weight:700; color:var(--blue); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:7px; border-bottom:1px solid #eee; white-space:nowrap; }
+  th { background:#eef3f8; }
+  input, select { padding:7px; border:1px solid #bbb; border-radius:6px; }
+  .btn { border:0; border-radius:6px; padding:6px 10px; cursor:pointer; background:var(--blue); color:#fff; }
+  .btn.red { background:var(--red); } .btn.line { background:#fff; color:#222; border:1px solid #999; }
+  .muted { color:#666; font-size:13px; }
+  #login { max-width:380px; margin:100px auto; }
+</style></head><body>
+<div id="login" class="card">
+  <h2>🔐 SelfXTrack admin</h2>
+  <p class="muted">Enter the server admin key (SELFX_ADMIN_KEY). It is kept only for this browser tab.</p>
+  <input id="key" type="password" style="width:100%"><br><br>
+  <button class="btn" onclick="enter()">Open</button> <span id="err" style="color:var(--red)"></span>
+</div>
+<div id="app" style="display:none">
+  <header><h1>SelfXTrack admin</h1>
+    <nav><button data-t="overview" class="on">Overview</button><button data-t="users">Users</button>
+      <button data-t="devices">Trackers</button><button data-t="firmware">Firmware (OTA)</button><button data-t="reports">Reports</button></nav>
+    <button class="btn line" onclick="sessionStorage.clear();location.reload()">Lock</button></header>
+  <main id="main"></main>
+</div>
+<script>
+let KEY = sessionStorage.getItem("sx_admin_key");
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const when = iso => iso ? new Date(iso).toLocaleString("en-IN", {timeZone: "Asia/Kolkata", dateStyle: "short", timeStyle: "short"}) : "–";
+async function api(path, opts = {}) {
+  const r = await fetch(path, {...opts, headers: {"X-Admin-Key": KEY, ...(opts.headers || {})}});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : r.statusText);
+  return j;
+}
+async function enter() {
+  KEY = $("key").value.trim();
+  try { await api("/api/admin/overview"); sessionStorage.setItem("sx_admin_key", KEY); show(); }
+  catch (e) { $("err").textContent = "Wrong key"; }
+}
+function show() { $("login").style.display = "none"; $("app").style.display = "block"; tab("overview"); }
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => tab(b.dataset.t));
+function tab(t) { document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.t === t)); ({overview, users, devices, firmware, reports})[t](); }
+
+async function overview() {
+  const o = await api("/api/admin/overview");
+  const box = (n, l) => `<div class="card"><div class="num">${n}</div><div class="muted">${l}</div></div>`;
+  $("main").innerHTML = `<div class="grid">${box(o.users, "users")}${box(o.claimed + " / " + o.devices, "trackers claimed / made")}
+    ${box(o.online, "trackers online (30 min)")}${box(o.active_sos, "active SOS")}${box(o.sos_7d, "SOS last 7 days")}${box(o.reports, "abuse reports")}</div>
+    <div class="card"><b>Plans</b><br>${Object.entries(o.plans).map(([k, v]) => `${esc(k)}: <b>${v}</b>`).join(" · ")}</div>`;
+}
+async function users(q = "") {
+  const u = await api("/api/admin/users?q=" + encodeURIComponent(q));
+  $("main").innerHTML = `<div class="card"><input id="q" placeholder="Search email / name / phone" value="${esc(q)}"
+    onkeydown="if(event.key==='Enter')users(this.value)"> <span class="muted">${u.length} shown</span></div>
+    <div class="card"><table><tr><th>Email</th><th>Name</th><th>Phone</th><th>Plan</th><th>Status</th><th>Trackers</th><th></th></tr>
+    ${u.map(x => `<tr><td>${esc(x.email)}</td><td>${esc(x.name)}</td><td>${esc(x.phone)} ${x.verified ? "✅" : ""}</td>
+      <td><select onchange="setPlan('${esc(x.email)}', this.value)">${["basic", "smart", "guardian"].map(p =>
+        `<option ${p === x.plan ? "selected" : ""}>${p}</option>`).join("")}</select></td>
+      <td>${esc(x.plan_status)}${x.expires ? " till " + when(x.expires) : ""}</td><td>${x.devices}</td>
+      <td><button class="btn ${x.banned ? "line" : "red"}" onclick="ban(${x.id}, ${!x.banned})">${x.banned ? "Unban" : "Ban"}</button></td></tr>`).join("")}</table></div>`;
+}
+async function setPlan(email, plan) { await api("/api/admin/users/plan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({email, plan})}); }
+async function ban(id, b) { if (!confirm(b ? "Ban this user? They will not be able to help or be alerted as a helper." : "Unban?")) return;
+  await api(`/api/admin/users/${id}/ban`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({banned: b})}); users($("q")?.value || ""); }
+async function devices(q = "") {
+  const d = await api("/api/admin/devices?q=" + encodeURIComponent(q));
+  $("main").innerHTML = `<div class="card"><input id="q" placeholder="Search device ID / name / owner" value="${esc(q)}"
+    onkeydown="if(event.key==='Enter')devices(this.value)"> <span class="muted">${d.length} shown</span></div>
+    <div class="card"><table><tr><th>Device</th><th>Name</th><th>Kind</th><th>Owner</th><th>Battery</th><th>Last seen</th><th>Firmware</th><th>Channel</th><th>OTA</th></tr>
+    ${d.map(x => `<tr><td>${esc(x.device_id)}</td><td>${esc(x.name)}</td><td>${esc(x.kind)}</td><td>${esc(x.owner || (x.claimed ? "" : "not claimed"))}</td>
+      <td>${x.battery ?? "–"}%</td><td>${when(x.last_seen)}</td><td>${esc(x.firmware)}</td>
+      <td><select onchange="channel('${esc(x.device_id)}', this.value)">${["stable", "beta"].map(c => `<option ${c === x.fw_channel ? "selected" : ""}>${c}</option>`).join("")}</select></td>
+      <td class="muted">${esc(x.ota_status || "")}</td></tr>`).join("")}</table></div>`;
+}
+async function channel(id, c) { await api(`/api/admin/devices/${id}/channel`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({channel: c})}); }
+async function firmware() {
+  const f = await api("/api/admin/firmware");
+  $("main").innerHTML = `<div class="card"><b>Upload a release</b> <span class="muted">(signed ESP32 app image .bin)</span><br><br>
+    Version <input id="fv" placeholder="1.2.0" size="8"> Channel <select id="fc"><option>stable</option><option>beta</option></select>
+    Rollout <input id="fr" type="number" value="10" min="1" max="100" size="4">% Notes <input id="fn" size="30">
+    <input id="ff" type="file" accept=".bin"> <button class="btn" onclick="upload()">Upload</button>
+    <p class="muted">Start with a small rollout (e.g. 10 %), watch the OTA status on the Trackers tab, then widen. Devices only update with no SOS and battery ≥ 30 %. A bad image rolls back automatically.</p></div>
+    <div class="card"><b>Devices by version:</b> ${Object.entries(f.devices_by_version).map(([v, n]) => `${esc(v)}: <b>${n}</b>`).join(" · ")}</div>
+    <div class="card"><table><tr><th>Version</th><th>Channel</th><th>Size</th><th>Rollout</th><th>Active</th><th>Uploaded</th><th>Notes</th><th></th></tr>
+    ${f.releases.map(r => `<tr><td>${esc(r.version)}</td><td>${esc(r.channel)}</td><td>${(r.size / 1024).toFixed(0)} KB</td>
+      <td><input type="number" value="${r.rollout_percent}" min="1" max="100" size="3" onchange="rel(${r.id}, {rollout_percent: +this.value})">%</td>
+      <td>${r.active ? "✅" : "⏸"}</td><td>${when(r.created_at)}</td><td>${esc(r.notes)}</td>
+      <td><button class="btn ${r.active ? "red" : ""}" onclick="rel(${r.id}, {active: ${!r.active}})">${r.active ? "Pause" : "Resume"}</button></td></tr>`).join("")}</table></div>`;
+}
+async function upload() {
+  const file = $("ff").files[0]; if (!file || !$("fv").value) return alert("Choose a version and a .bin file");
+  try { await api(`/api/admin/firmware?version=${encodeURIComponent($("fv").value)}&channel=${$("fc").value}&rollout=${$("fr").value}&notes=${encodeURIComponent($("fn").value)}`,
+      {method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: await file.arrayBuffer()}); firmware(); }
+  catch (e) { alert(e.message); }
+}
+async function rel(id, body) { await api(`/api/admin/firmware/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}); firmware(); }
+async function reports() {
+  const r = await api("/api/admin/reports");
+  $("main").innerHTML = `<div class="card"><table><tr><th>When</th><th>Reporter</th><th>Reported user</th><th>Reason</th><th>SOS</th><th></th></tr>
+    ${r.map(x => `<tr><td>${when(x.at)}</td><td>${esc(x.reporter)}</td><td>${esc(x.reported)} ${x.banned ? "⛔" : ""}</td>
+      <td style="white-space:normal">${esc(x.reason)}</td><td>${x.sos_id ?? ""}</td>
+      <td>${x.banned ? "" : `<button class="btn red" onclick="ban(${x.reported_id}, true).then(reports)">Ban</button>`}</td></tr>`).join("") ||
+      "<tr><td colspan=6 class=muted>No reports</td></tr>"}</table></div>`;
+}
+KEY ? api("/api/admin/overview").then(show).catch(() => sessionStorage.clear()) : null;
+</script></body></html>

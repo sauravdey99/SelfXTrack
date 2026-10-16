@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RELEASE: HTTPS only – children's locations must never travel unencrypted.
+     Debug builds use src/debug/res/xml/network_security_config.xml, which allows plain HTTP to a local test server. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
